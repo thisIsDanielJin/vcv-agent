@@ -67,12 +67,15 @@ PATCH JSON FORMAT:
 RULES:
 - Every patch MUST include Core/AudioInterface2 as the audio output
 - Signal must reach AudioInterface2 inputs (id 0 = left, id 1 = right)
-- Use only modules from the registry above
+- Do NOT include VCV-Recorder. It is injected automatically for rendering.
+- Use only Fundamental and Core modules from the registry above
 - Parameter values must be within the documented [min, max] range
 - Module IDs must be unique integers
 - Cable IDs must be unique integers
-- For self-playing patches, use Fundamental/SEQ3 with "data": {{"running": true}}
-- For Core/AudioInterface2, include "data" block for audio driver config
+- Self-playing patches: use SEQ3 with "data": {{"running": true, "gates": [1,1,1,1,1,1,1,1]}}
+- For Core/AudioInterface2, include "data" with audio driver config
+- Always include an ADSR envelope for amplitude shaping (gate from SEQ3 output 12)
+- Make sure the signal path is complete: source -> processing -> VCA -> AudioInterface2
 
 ITERATION RULES:
 - When revising, change at most 2-3 parameters per iteration

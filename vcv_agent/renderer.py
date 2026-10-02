@@ -1,24 +1,92 @@
-"""Render a .vcv patch to WAV using VCV Rack Pro headless mode."""
+"""Render a .vcv patch to WAV using VCV Rack Pro headless mode.
+
+Pipeline:
+1. Recompile the patch with a VCV-Recorder module injected (writes to a known path)
+2. Copy plugins needed (VCV-Recorder) to the temp user directory
+3. Launch `Rack -h patch.vcv -u tmpdir`
+4. Wait for render duration + buffer
+5. Kill process, collect the WAV
+"""
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
+import pyzstd
+
+from vcv_agent.compiler import compile_vcv
 from vcv_agent.config import settings
 
 
-def find_recorder_wav(user_dir: Path, timeout: float = 2.0) -> Path | None:
-    """Look for the WAV file written by VCV-Recorder in the user directory."""
-    # Recorder writes to the path specified in its data block,
-    # or to ~/Documents/ by default. We override it in the patch.
-    candidates = list(user_dir.rglob("*.wav"))
-    if candidates:
-        return candidates[0]
-    return None
+def _extract_patch_json(vcv_path: Path) -> dict[str, Any]:
+    """Extract patch.json from a .vcv file."""
+    compressed = vcv_path.read_bytes()
+    import io
+
+    tar_bytes = pyzstd.decompress(compressed)
+    tf = tarfile.open(fileobj=io.BytesIO(tar_bytes))
+    raw = tf.extractfile("./patch.json")
+    if raw is None:
+        raise RuntimeError(f"No patch.json found in {vcv_path}")
+    result: dict[str, Any] = json.loads(raw.read())
+    return result
+
+
+def _ensure_recorder_plugin(user_dir: Path) -> None:
+    """Copy the VCV-Recorder plugin to the temp user directory.
+
+    VCV-Recorder ships with Rack Pro but needs to be in the user's
+    plugin directory for headless mode to find it.
+    """
+    system_plugins = (
+        Path.home() / "Library" / "Application Support" / "Rack2" / "plugins-mac-arm64"
+    )
+    recorder_src = system_plugins / "VCV-Recorder"
+
+    if not recorder_src.exists():
+        # Try other common locations
+        for alt in [
+            system_plugins.parent / "plugins" / "VCV-Recorder",
+            Path("/Applications/VCV Rack 2 Pro.app/Contents/Resources/plugins/VCV-Recorder"),
+        ]:
+            if alt.exists():
+                recorder_src = alt
+                break
+
+    if not recorder_src.exists():
+        raise FileNotFoundError(
+            f"VCV-Recorder plugin not found at {recorder_src}. "
+            "Install it from the VCV Rack library."
+        )
+
+    dest_plugins = user_dir / "plugins-mac-arm64"
+    dest_plugins.mkdir(parents=True, exist_ok=True)
+    dest = dest_plugins / "VCV-Recorder"
+    if not dest.exists():
+        shutil.copytree(recorder_src, dest)
+
+
+def _copy_fundamental_plugin(user_dir: Path) -> None:
+    """Copy the Fundamental plugin to the temp user directory."""
+    system_plugins = (
+        Path.home() / "Library" / "Application Support" / "Rack2" / "plugins-mac-arm64"
+    )
+    fund_src = system_plugins / "Fundamental"
+    if not fund_src.exists():
+        return  # Fundamental is built-in to Rack, may not need separate copy
+
+    dest_plugins = user_dir / "plugins-mac-arm64"
+    dest_plugins.mkdir(parents=True, exist_ok=True)
+    dest = dest_plugins / "Fundamental"
+    if not dest.exists():
+        shutil.copytree(fund_src, dest)
 
 
 def render_patch(
@@ -28,12 +96,13 @@ def render_patch(
 ) -> Path:
     """Run VCV Rack Pro headless on a patch, capture audio to WAV.
 
-    Strategy: inject a VCV-Recorder module pointing at output_wav,
-    then run Rack -h for `duration` seconds and kill it.
+    Recompiles the patch with an injected VCV-Recorder module that
+    writes directly to a known WAV path. Then launches Rack in
+    headless mode for the specified duration.
 
     Args:
-        vcv_path: path to the .vcv file
-        output_wav: where to write the rendered WAV
+        vcv_path: path to the .vcv file (LLM-generated, no Recorder)
+        output_wav: where the final WAV should end up
         duration: render duration in seconds (default from settings)
 
     Returns:
@@ -44,27 +113,38 @@ def render_patch(
 
     rack_bin = settings.resolve_rack_path()
 
-    # Create a temporary user directory so Rack doesn't collide with
-    # the real user's settings/autosave
     with tempfile.TemporaryDirectory(prefix="vcv-agent-") as tmp:
         tmp_path = Path(tmp)
 
-        # Copy the .vcv to tmp so Rack can find it
-        patch_copy = tmp_path / "patch.vcv"
-        shutil.copy2(vcv_path, patch_copy)
+        # The WAV path the Recorder will write to
+        recorder_wav = tmp_path / "recording.wav"
+
+        # Extract the original patch, recompile with Recorder injected
+        patch_json = _extract_patch_json(vcv_path)
+        recompiled_vcv = tmp_path / "patch.vcv"
+        compile_vcv(patch_json, recompiled_vcv, wav_path=str(recorder_wav))
+
+        # Set up plugin directory
+        _ensure_recorder_plugin(tmp_path)
+        _copy_fundamental_plugin(tmp_path)
+
+        # Write minimal settings.json so Rack doesn't prompt
+        settings_json = tmp_path / "settings.json"
+        settings_json.write_text(json.dumps({
+            "token": "",
+            "windowSize": [1, 1],
+            "windowPos": [0, 0],
+        }))
 
         # Run Rack headless
-        # -h = headless, no GUI
-        # -u = user directory override
         proc = subprocess.Popen(
-            [rack_bin, "-h", str(patch_copy), "-u", str(tmp_path)],
+            [rack_bin, "-h", str(recompiled_vcv), "-u", str(tmp_path)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
 
         try:
-            # Wait for duration + small buffer for startup
-            time.sleep(duration + 2)
+            time.sleep(duration + 3)  # duration + startup buffer
         finally:
             proc.terminate()
             try:
@@ -73,16 +153,22 @@ def render_patch(
                 proc.kill()
                 proc.wait()
 
-        # Find the rendered WAV
-        wav = find_recorder_wav(tmp_path)
-        if wav and wav.exists():
-            output_wav.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(wav, output_wav)
-            return output_wav
+        # Collect stderr for debugging
+        _, stderr = proc.communicate(timeout=2) if proc.poll() is None else (b"", b"")
+        if not recorder_wav.exists():
+            # Check if Recorder wrote somewhere else
+            wavs = list(tmp_path.rglob("*.wav"))
+            if wavs:
+                recorder_wav = wavs[0]
 
-        # If Recorder module approach failed, check if we got audio another way
-        raise RuntimeError(
-            f"Render completed but no WAV found in {tmp_path}. "
-            "Ensure the patch includes a VCV-Recorder module, or "
-            "use BlackHole audio routing as fallback."
-        )
+        if not recorder_wav.exists():
+            stderr_text = stderr.decode("utf-8", errors="replace") if stderr else ""
+            raise RuntimeError(
+                f"Render completed but no WAV found.\n"
+                f"Rack stderr: {stderr_text[:500]}\n"
+                f"Tmp dir contents: {list(tmp_path.rglob('*'))}"
+            )
+
+        output_wav.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(recorder_wav, output_wav)
+        return output_wav
