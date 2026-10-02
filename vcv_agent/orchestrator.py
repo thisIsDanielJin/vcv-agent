@@ -45,6 +45,7 @@ def run_agent(
     reference_wav: Path | None = None,
     max_iterations: int | None = None,
     use_audio_model: bool = True,
+    play_audio: bool = False,
     render_fn: Any = None,  # injectable for testing
 ) -> RunResult:
     """Main agent loop.
@@ -54,6 +55,7 @@ def run_agent(
         reference_wav: optional WAV file to match
         max_iterations: override from settings
         use_audio_model: whether to use local Qwen2-Audio for feedback
+        play_audio: play each iteration's WAV via afplay
         render_fn: optional render function override (for testing without Rack)
     """
     if max_iterations is None:
@@ -241,6 +243,13 @@ def run_agent(
                     print(f"  Audio desc: {audio_desc[:120]}...")
                 except Exception as e:
                     print(f"  Audio model failed (non-fatal): {e}")
+
+            # Play audio if requested
+            if play_audio:
+                import subprocess as _sp
+
+                print(f"  Playing iteration {i}...")
+                _sp.run(["afplay", str(wav_path)])
 
         # 7. Build history for next iteration
         iter_result = IterationResult(

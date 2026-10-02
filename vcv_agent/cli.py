@@ -13,6 +13,7 @@ import click
 @click.option("--max-iters", "-n", type=int, default=None, help="Max iterations (default: 10)")
 @click.option("--model", "-m", type=str, default=None, help="LLM model")
 @click.option("--no-audio-feedback", is_flag=True, help="Skip local Qwen2-Audio analysis")
+@click.option("--play", is_flag=True, help="Play each iteration's audio via speakers")
 @click.option("--validate-only", is_flag=True, help="Just validate a patch JSON, no rendering")
 @click.option("--patch-json", type=click.Path(exists=True), help="Validate an existing patch JSON")
 def main(
@@ -21,6 +22,7 @@ def main(
     max_iters: int | None,
     model: str | None,
     no_audio_feedback: bool,
+    play: bool,
     validate_only: bool,
     patch_json: str | None,
 ) -> None:
@@ -48,6 +50,7 @@ def main(
         reference_wav=Path(reference) if reference else None,
         max_iterations=max_iters,
         use_audio_model=not no_audio_feedback,
+        play_audio=play,
     )
 
     if result.converged:
