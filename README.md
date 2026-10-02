@@ -47,7 +47,7 @@ graph TD
 
     subgraph gen ["Generation"]
         REG["Module Registry\nregistry/modules.json\n42 modules: params, ports, ranges"]
-        LLM["LLM Interface  (llm.py)\nOpenAI API (GPT-4o)\nSystem prompt includes\nfull registry + patch schema"]
+        LLM["LLM Interface  (llm.py)\nClaude Sonnet via hyperspace proxy\nSystem prompt includes\nfull registry + patch schema"]
     end
 
     subgraph verify ["Verification"]
@@ -91,7 +91,7 @@ graph TD
 - macOS with Apple Silicon (M1/M2/M3/M4)
 - Python 3.11+
 - VCV Rack 2 Pro (headless mode)
-- OpenAI API key (GPT-4o for patch generation)
+- SAP Hyperspace proxy running (`localhost:6655`) for Claude Sonnet
 
 ## Quick start
 
@@ -100,7 +100,7 @@ git clone https://github.com/thisIsDanielJin/vcv-agent.git
 cd vcv-agent
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[audio-model]"   # includes Qwen2-Audio via MLX
-cp .env.example .env              # add your OPENAI_API_KEY
+# no API keys needed -- Claude runs via hyperspace proxy, audio model is local
 
 # text prompt mode
 vcv-agent "short percussive acid bleep, A3, resonant filter sweep, 50ms decay"

@@ -10,12 +10,13 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
+    # Claude via hyperspace proxy (default, free via SAP)
+    claude_proxy_url: str = "http://localhost:6655/anthropic"
+    claude_proxy_key: str = "7ae5cde3-7528-4fca-8121-185d05bd7eee"
+    model: str = "anthropic--claude-4.6-sonnet"
+
     # VCV Rack Pro binary path. Auto-detected on macOS if unset.
     rack_path: str = ""
-
-    # LLM
-    openai_api_key: str = ""
-    model: str = "gpt-4o"
 
     # Rendering
     render_duration: int = 8
@@ -41,7 +42,9 @@ class Settings(BaseSettings):
             / "Contents"
             / "MacOS"
             / "Rack",
-            Path("/Applications/VCV Rack 2 Pro.app/Contents/MacOS/Rack"),
+            Path(
+                "/Applications/VCV Rack 2 Pro.app/Contents/MacOS/Rack"
+            ),
         ]
         for c in candidates:
             if c.exists():
