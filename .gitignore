@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+.env
+runs/
+*.wav
+*.vcv
+!registry/*.json
+!test/fixtures/*.vcv
+!test/fixtures/*.wav
