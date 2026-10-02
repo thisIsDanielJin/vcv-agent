@@ -143,51 +143,6 @@ def generate_patch(
     return patch_dict, explanation
 
 
-def get_audio_description(
-    wav_path: Path,
-    target_description: str,
-    model: str = "gpt-4o-audio-preview",
-) -> str:
-    """Send audio to GPT-4o for natural language description and comparison.
-
-    Uses the audio input capability of GPT-4o.
-    """
-    client = OpenAI(api_key=settings.openai_api_key)
-
-    audio_b64 = base64.b64encode(wav_path.read_bytes()).decode("utf-8")
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an audio analysis expert for synthesizer sounds. "
-                    "Describe the sound precisely: pitch, timbre, envelope shape, "
-                    "brightness, rhythmic pattern, and overall character. "
-                    "Then compare it to the target description."
-                ),
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_audio",
-                        "input_audio": {"data": audio_b64, "format": "wav"},
-                    },
-                    {
-                        "type": "text",
-                        "text": f"Describe this synthesizer sound. Target: {target_description}. "
-                        "How close is it? What specifically differs?",
-                    },
-                ],
-            },
-        ],
-        max_tokens=500,
-    )
-
-    return response.choices[0].message.content or ""
-
 
 def _parse_response(text: str) -> tuple[dict[str, Any], str]:
     """Extract JSON patch and explanation from LLM response text."""

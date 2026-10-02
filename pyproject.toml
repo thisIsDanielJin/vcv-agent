@@ -10,7 +10,6 @@ requires-python = ">=3.11"
 dependencies = [
     "click>=8.1",
     "openai>=1.30",
-    "anthropic>=0.25",
     "librosa>=0.10",
     "matplotlib>=3.8",
     "numpy>=1.26",
@@ -18,9 +17,13 @@ dependencies = [
     "pydantic-settings>=2.1",
     "pyzstd>=0.16",
     "soundfile>=0.12",
+    "jinja2>=3.1",
 ]
 
 [project.optional-dependencies]
+audio-model = [
+    "mlx-audio>=0.5",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",

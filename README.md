@@ -15,11 +15,11 @@ flowchart TD
         B["LLM generates/revises\npatch JSON"] --> C{"Validate\nagainst module registry"}
         C -- "invalid" --> D["Append errors\nto conversation"]
         D --> B
-        C -- "valid" --> E["Compile JSON to .vcv\n(tar + zstd)"]
-        E --> F["Render via Rack Pro\nheadless mode → WAV"]
+        C -- "valid" --> E["Compile JSON to .vcv\n+ inject Recorder module"]
+        E --> F["Render via Rack Pro\nheadless mode, WAV"]
         F --> G["Spectrogram\n(mel, PNG)"]
         F --> H["Audio features\n(centroid, pitch, rms,\nflatness, onsets)"]
-        F --> I["GPT-4o listens to WAV\n(optional)"]
+        F --> I["Qwen2-Audio 7B\nlocal, describes sound"]
         G & H & I --> J["Build revision prompt:\nspectrogram as image +\nfeature deltas + audio description"]
         J --> K{"Features within\n15% of target?"}
         K -- "no, delta > threshold" --> B
@@ -47,18 +47,18 @@ graph TD
 
     subgraph gen ["Generation"]
         REG["Module Registry\nregistry/modules.json\n42 modules: params, ports, ranges"]
-        LLM["LLM Interface  (llm.py)\nOpenAI API\nSystem prompt includes\nfull registry + patch schema"]
-        AUDIO_LLM["GPT-4o Audio  (llm.py)\nSends WAV, receives\nnatural language description"]
+        LLM["LLM Interface  (llm.py)\nOpenAI API (GPT-4o)\nSystem prompt includes\nfull registry + patch schema"]
     end
 
     subgraph verify ["Verification"]
         VAL["Validator  (validator.py)\nModule slugs, param ranges,\nport IDs, cable refs,\naudio output check"]
-        COMP["Compiler  (compiler.py)\nAssign module IDs, layout,\nJSON → tar+zstd → .vcv"]
+        COMP["Compiler  (compiler.py)\nAssign module IDs, layout,\ninject Recorder,\nJSON, tar+zstd, .vcv"]
     end
 
     subgraph audio ["Audio Pipeline"]
-        REND["Renderer  (renderer.py)\nRack Pro headless: -h flag\nTemp user dir, kill after N sec\n→ WAV via Recorder module"]
-        ANLZ["Analyzer  (analyzer.py)\nMel spectrogram → PNG\nFeature extraction → JSON\n(librosa + matplotlib)"]
+        REND["Renderer  (renderer.py)\nRack Pro headless: -h flag\nTemp user dir, kill after N sec\nWAV via injected Recorder"]
+        ANLZ["Analyzer  (analyzer.py)\nMel spectrogram, PNG\nFeature extraction, JSON\n(librosa + matplotlib)"]
+        QWEN["Qwen2-Audio 7B  (audio_model.py)\nLocal MLX, 4-bit quantized\n~4.2 GB, no API calls\nDescribes sound character"]
     end
 
     CMD --> LOOP
@@ -71,27 +71,27 @@ graph TD
     LOOP -- "valid patch" --> COMP
     COMP -- ".vcv file" --> REND
     REND -- ".wav file" --> ANLZ
-    REND -- ".wav file" --> AUDIO_LLM
+    REND -- ".wav file" --> QWEN
     ANLZ -- "spectrogram PNG +\nfeatures JSON" --> LOOP
-    AUDIO_LLM -- "sonic description" --> LOOP
+    QWEN -- "sonic description" --> LOOP
 
     style CMD fill:#0f3460,stroke:#e94560,color:#eee
     style LOOP fill:#0f3460,stroke:#e94560,color:#eee
     style LLM fill:#16213e,stroke:#0f3460,color:#eee
     style REG fill:#16213e,stroke:#0f3460,color:#eee
-    style AUDIO_LLM fill:#16213e,stroke:#0f3460,color:#eee
     style VAL fill:#1a1a2e,stroke:#0f3460,color:#eee
     style COMP fill:#1a1a2e,stroke:#0f3460,color:#eee
     style REND fill:#1a1a2e,stroke:#e94560,color:#eee
     style ANLZ fill:#1a1a2e,stroke:#e94560,color:#eee
+    style QWEN fill:#1a1a2e,stroke:#e94560,color:#eee
 ```
 
 ## Requirements
 
+- macOS with Apple Silicon (M1/M2/M3/M4)
 - Python 3.11+
 - VCV Rack 2 Pro (headless mode)
-- OpenAI API key (GPT-4o for patch generation + audio feedback)
-- librosa, matplotlib, pyzstd (installed via pip)
+- OpenAI API key (GPT-4o for patch generation)
 
 ## Quick start
 
@@ -99,14 +99,17 @@ graph TD
 git clone https://github.com/thisIsDanielJin/vcv-agent.git
 cd vcv-agent
 python -m venv .venv && source .venv/bin/activate
-pip install -e .
-cp .env.example .env  # add your OPENAI_API_KEY
+pip install -e ".[audio-model]"   # includes Qwen2-Audio via MLX
+cp .env.example .env              # add your OPENAI_API_KEY
 
 # text prompt mode
 vcv-agent "short percussive acid bleep, A3, resonant filter sweep, 50ms decay"
 
 # reference audio mode
 vcv-agent --reference path/to/target.wav
+
+# skip local audio model (faster iterations, spectrogram + features only)
+vcv-agent --no-audio-feedback "bright FM bleep, metallic, fast decay"
 
 # validate a patch without rendering
 vcv-agent --validate-only --patch-json path/to/patch.json
@@ -119,9 +122,10 @@ vcv-agent/
   vcv_agent/
     cli.py             # entry point
     orchestrator.py    # agent loop (generate-validate-render-analyze-revise)
-    llm.py             # LLM interface (OpenAI, GPT-4o audio)
+    llm.py             # LLM interface (OpenAI GPT-4o for patch generation)
+    audio_model.py     # local Qwen2-Audio 7B (4-bit MLX, no API)
     validator.py       # structural patch validation against registry
-    compiler.py        # patch JSON -> .vcv file (tar+zstd)
+    compiler.py        # patch JSON -> .vcv file + Recorder injection
     renderer.py        # VCV Rack Pro headless rendering
     analyzer.py        # spectrogram + audio feature extraction
     config.py          # settings from .env
@@ -133,6 +137,16 @@ vcv-agent/
   scripts/
     build_registry.py  # regenerate registry from source data
 ```
+
+## Audio feedback
+
+The agent "hears" through three complementary channels:
+
+| Channel | What it provides | Speed | Role |
+|---|---|---|---|
+| **Spectrogram** (librosa) | Mel spectrogram PNG, sent to LLM as image | Instant | Visual frequency/time overview |
+| **Audio features** (librosa) | Centroid, pitch, RMS, flatness, onsets as numbers | Instant | Drives convergence decisions (15% threshold) |
+| **Qwen2-Audio** (local MLX) | Natural language description of the sound | ~30s | Subjective second opinion ("bright", "metallic", "percussive") |
 
 ## Module scope (v1)
 

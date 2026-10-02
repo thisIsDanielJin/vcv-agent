@@ -12,7 +12,7 @@ import click
 @click.option("--reference", "-r", type=click.Path(exists=True), help="Reference WAV to match")
 @click.option("--max-iters", "-n", type=int, default=None, help="Max iterations (default: 10)")
 @click.option("--model", "-m", type=str, default=None, help="LLM model (default: gpt-4o)")
-@click.option("--no-audio-feedback", is_flag=True, help="Skip GPT-4o audio analysis")
+@click.option("--no-audio-feedback", is_flag=True, help="Skip local Qwen2-Audio analysis")
 @click.option("--validate-only", is_flag=True, help="Just validate a patch JSON, no rendering")
 @click.option("--patch-json", type=click.Path(exists=True), help="Validate an existing patch JSON")
 def main(

@@ -16,7 +16,7 @@ from vcv_agent.analyzer import (
 )
 from vcv_agent.compiler import compile_vcv
 from vcv_agent.config import settings
-from vcv_agent.llm import build_system_prompt, generate_patch, get_audio_description
+from vcv_agent.llm import build_system_prompt, generate_patch
 from vcv_agent.validator import ValidationResult, load_registry, validate_patch
 
 
@@ -53,7 +53,7 @@ def run_agent(
         prompt: text description of desired sound
         reference_wav: optional WAV file to match
         max_iterations: override from settings
-        use_audio_model: whether to use GPT-4o audio for feedback
+        use_audio_model: whether to use local Qwen2-Audio for feedback
         render_fn: optional render function override (for testing without Rack)
     """
     if max_iterations is None:
@@ -81,6 +81,15 @@ def run_agent(
             json.dumps(target_features.to_dict(), indent=2)
         )
 
+    # Check audio model availability
+    audio_model_available = False
+    if use_audio_model:
+        from vcv_agent.audio_model import is_available
+
+        audio_model_available = is_available()
+        if not audio_model_available:
+            print("  Qwen2-Audio not available (no MLX). Skipping audio descriptions.")
+
     # Conversation history for the LLM
     history: list[dict[str, Any]] = []
     result = RunResult(run_dir=run_dir)
@@ -96,15 +105,21 @@ def run_agent(
         if i == 0:
             iter_prompt = f"Create a VCV Rack patch for: {prompt}"
             if target_features:
-                features_json = json.dumps(target_features.to_dict(), indent=2)
-                iter_prompt += f"\n\nTarget audio features:\n{features_json}"
+                features_json = json.dumps(
+                    target_features.to_dict(), indent=2
+                )
+                iter_prompt += (
+                    f"\n\nTarget audio features:\n{features_json}"
+                )
         else:
             prev = result.iterations[-1]
             iter_prompt = _build_revision_prompt(prev, target_features)
 
         # 2. Generate patch via LLM
         print("  Generating patch...")
-        spectrogram = result.iterations[-1].spectrogram_path if i > 0 else None
+        spectrogram = (
+            result.iterations[-1].spectrogram_path if i > 0 else None
+        )
         try:
             patch, explanation = generate_patch(
                 iter_prompt,
@@ -118,15 +133,19 @@ def run_agent(
 
         # Save LLM output
         (iter_dir / "patch.json").write_text(json.dumps(patch, indent=2))
-        (iter_dir / "llm_response.json").write_text(json.dumps({
-            "prompt": iter_prompt,
-            "explanation": explanation,
-        }, indent=2))
+        (iter_dir / "llm_response.json").write_text(
+            json.dumps(
+                {"prompt": iter_prompt, "explanation": explanation},
+                indent=2,
+            )
+        )
 
         # 3. Validate
         print("  Validating...")
         validation = validate_patch(patch, registry)
-        (iter_dir / "validation.json").write_text(json.dumps(validation.to_dict(), indent=2))
+        (iter_dir / "validation.json").write_text(
+            json.dumps(validation.to_dict(), indent=2)
+        )
 
         if not validation.valid:
             print(f"  Validation failed: {len(validation.errors)} errors")
@@ -135,7 +154,10 @@ def run_agent(
 
             # Feed errors back to LLM
             error_text = json.dumps(validation.to_dict(), indent=2)
-            history.append({"role": "assistant", "content": json.dumps(patch)})
+            history.append({
+                "role": "assistant",
+                "content": json.dumps(patch),
+            })
             history.append({
                 "role": "user",
                 "content": (
@@ -145,7 +167,10 @@ def run_agent(
             })
 
             iter_result = IterationResult(
-                iteration=i, patch=patch, validation=validation, explanation=explanation
+                iteration=i,
+                patch=patch,
+                validation=validation,
+                explanation=explanation,
             )
             result.iterations.append(iter_result)
             continue
@@ -161,19 +186,20 @@ def run_agent(
         wav_path = iter_dir / "audio.wav"
         features: AudioFeatures | None = None
         audio_desc = ""
+        spec_path = iter_dir / "spectrogram.png"
 
         if render_fn:
-            # Use injected render function (testing)
             render_fn(vcv_path, wav_path)
         else:
             try:
                 from vcv_agent.renderer import render_patch
 
-                print(f"  Rendering ({settings.render_duration}s)...")
+                dur = settings.render_duration
+                print(f"  Rendering ({dur}s)...")
                 render_patch(vcv_path, wav_path)
             except Exception as e:
                 print(f"  Render failed: {e}")
-                print("  Skipping audio analysis for this iteration.")
+                print("  Skipping audio analysis.")
                 iter_result = IterationResult(
                     iteration=i,
                     patch=patch,
@@ -182,29 +208,37 @@ def run_agent(
                     wav_path=None,
                 )
                 result.iterations.append(iter_result)
-                history.append({"role": "assistant", "content": json.dumps(patch)})
+                history.append({
+                    "role": "assistant",
+                    "content": json.dumps(patch),
+                })
                 continue
 
         # 6. Analyze
         if wav_path.exists():
             print("  Analyzing audio...")
-            spec_path = iter_dir / "spectrogram.png"
             generate_spectrogram(wav_path, spec_path)
             features = extract_features(wav_path)
             (iter_dir / "features.json").write_text(
                 json.dumps(features.to_dict(), indent=2)
             )
-            print(f"  Features: centroid={features.spectral_centroid_hz}Hz, "
-                  f"pitch={features.estimated_pitch_hz}Hz, "
-                  f"rms={features.rms_energy}")
+            print(
+                f"  Features: centroid={features.spectral_centroid_hz}Hz, "
+                f"pitch={features.estimated_pitch_hz}Hz, "
+                f"rms={features.rms_energy}"
+            )
 
-            # Optional audio-native model
-            if use_audio_model and settings.openai_api_key:
+            # Local audio model (Qwen2-Audio, ~30s per clip)
+            if audio_model_available:
                 try:
-                    print("  Getting audio description from GPT-4o...")
-                    audio_desc = get_audio_description(wav_path, prompt)
-                    (iter_dir / "audio_description.txt").write_text(audio_desc)
-                    print(f"  Audio desc: {audio_desc[:100]}...")
+                    from vcv_agent.audio_model import describe_audio
+
+                    print("  Qwen2-Audio analyzing...")
+                    audio_desc = describe_audio(wav_path, prompt)
+                    (iter_dir / "audio_description.txt").write_text(
+                        audio_desc
+                    )
+                    print(f"  Audio desc: {audio_desc[:120]}...")
                 except Exception as e:
                     print(f"  Audio model failed (non-fatal): {e}")
 
@@ -222,15 +256,20 @@ def run_agent(
         result.iterations.append(iter_result)
 
         # Add to conversation history
-        history.append({"role": "assistant", "content": json.dumps(patch) + "\n" + explanation})
+        history.append({
+            "role": "assistant",
+            "content": json.dumps(patch) + "\n" + explanation,
+        })
 
         # 8. Check convergence
         if target_features and features:
             deltas = compare_features(features, target_features)
-            (iter_dir / "deltas.json").write_text(json.dumps(deltas, indent=2))
+            (iter_dir / "deltas.json").write_text(
+                json.dumps(deltas, indent=2)
+            )
 
             if _is_converged(features, target_features):
-                print("  CONVERGED! Features match target within threshold.")
+                print("  CONVERGED!")
                 result.converged = True
                 result.best_iteration = i
                 break
@@ -251,31 +290,46 @@ def run_agent(
     return result
 
 
-def _build_revision_prompt(prev: IterationResult, target: AudioFeatures | None) -> str:
-    """Build the revision prompt from the previous iteration's results."""
+def _build_revision_prompt(
+    prev: IterationResult, target: AudioFeatures | None
+) -> str:
+    """Build the revision prompt from the previous iteration."""
     parts = ["Revise the patch based on this feedback:\n"]
 
     if prev.features:
-        parts.append(f"Current features:\n{json.dumps(prev.features.to_dict(), indent=2)}")
+        parts.append(
+            f"Current features:\n"
+            f"{json.dumps(prev.features.to_dict(), indent=2)}"
+        )
 
     if target and prev.features:
         deltas = compare_features(prev.features, target)
-        parts.append(f"\nFeature deltas vs target:\n{json.dumps(deltas, indent=2)}")
+        parts.append(
+            f"\nFeature deltas vs target:\n{json.dumps(deltas, indent=2)}"
+        )
 
     if prev.audio_description:
         parts.append(f"\nAudio description: {prev.audio_description}")
 
     parts.append(
-        "\nChange at most 2-3 parameters. Explain what you're changing and why. "
+        "\nChange at most 2-3 parameters. Explain what you changed and why. "
         "Output the full revised patch JSON."
     )
 
     return "\n".join(parts)
 
 
-def _is_converged(current: AudioFeatures, target: AudioFeatures, threshold: float = 0.15) -> bool:
-    """Check if features are within threshold (15% relative error) of target."""
-    for field_name in ["spectral_centroid_hz", "estimated_pitch_hz", "rms_energy"]:
+def _is_converged(
+    current: AudioFeatures,
+    target: AudioFeatures,
+    threshold: float = 0.15,
+) -> bool:
+    """Check if features are within threshold of target."""
+    for field_name in [
+        "spectral_centroid_hz",
+        "estimated_pitch_hz",
+        "rms_energy",
+    ]:
         curr = getattr(current, field_name)
         tgt = getattr(target, field_name)
         if tgt == 0:
