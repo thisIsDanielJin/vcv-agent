@@ -26,8 +26,8 @@ class Settings(BaseSettings):
     max_iterations: int = 10
 
     # Paths
-    runs_dir: Path = Path("runs")
-    registry_path: Path = Path("registry/modules.json")
+    runs_dir: Path = Path(__file__).parent.parent / "runs"
+    registry_path: Path = Path(__file__).parent.parent / "registry" / "modules.json"
 
     def resolve_rack_path(self) -> str:
         """Find the Rack binary, auto-detecting on macOS if not configured."""
