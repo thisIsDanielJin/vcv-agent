@@ -9,20 +9,23 @@ renders, analyzes, and refines VCV Rack patches until the output converges on th
 
 ```mermaid
 flowchart TD
-    A["Prompt / Reference WAV"] --> B["LLM generates patch JSON"]
-    B --> C{"Validate\n(registry check)"}
-    C -- "errors" --> D["Feed errors back to LLM"]
-    D --> B
-    C -- "valid" --> E["Compile to .vcv"]
-    E --> F["Render headless\n(Rack Pro -h)"]
-    F --> G["Analyze WAV"]
-    G --> H["Spectrogram\n(mel, PNG)"]
-    G --> I["Audio features\n(centroid, pitch, rms...)"]
-    G --> J["Audio-native model\n(GPT-4o listens)"]
-    H & I & J --> K{"Converged?"}
-    K -- "no" --> L["Build revision prompt\nwith feedback"]
-    L --> B
-    K -- "yes / max iters" --> M["Output: .vcv + .wav + run log"]
+    A["Prompt or Reference WAV"] --> B
+
+    subgraph LOOP ["Agent loop (max N iterations)"]
+        B["LLM generates/revises\npatch JSON"] --> C{"Validate\nagainst module registry"}
+        C -- "invalid" --> D["Append errors\nto conversation"]
+        D --> B
+        C -- "valid" --> E["Compile JSON to .vcv\n(tar + zstd)"]
+        E --> F["Render via Rack Pro\nheadless mode → WAV"]
+        F --> G["Spectrogram\n(mel, PNG)"]
+        F --> H["Audio features\n(centroid, pitch, rms,\nflatness, onsets)"]
+        F --> I["GPT-4o listens to WAV\n(optional)"]
+        G & H & I --> J["Build revision prompt:\nspectrogram as image +\nfeature deltas + audio description"]
+        J --> K{"Features within\n15% of target?"}
+        K -- "no, delta > threshold" --> B
+    end
+
+    K -- "yes, or max iters" --> M["Output:\nfinal .vcv + .wav +\nrun log per iteration"]
 
     style A fill:#1a1a2e,stroke:#e94560,color:#eee
     style M fill:#1a1a2e,stroke:#0f3460,color:#eee
@@ -33,100 +36,61 @@ flowchart TD
 ## Architecture
 
 ```mermaid
-graph LR
-    subgraph Orchestrator
-        CLI["CLI\n(click)"]
-        ORCH["Agent Loop"]
+graph TD
+    subgraph cli ["CLI  (cli.py)"]
+        CMD["vcv-agent 'prompt'\nvcv-agent --reference target.wav"]
     end
 
-    subgraph Generation
-        LLM["LLM Interface\n(OpenAI / Anthropic)"]
-        REG["Module Registry\n(42 modules JSON)"]
+    subgraph orch ["Orchestrator  (orchestrator.py)"]
+        LOOP["Agent loop\nmanages iteration state,\nconversation history,\nconvergence check"]
     end
 
-    subgraph Verification
-        VAL["Validator"]
-        COMP["Compiler\n(JSON → .vcv)"]
+    subgraph gen ["Generation"]
+        REG["Module Registry\nregistry/modules.json\n42 modules: params, ports, ranges"]
+        LLM["LLM Interface  (llm.py)\nOpenAI API\nSystem prompt includes\nfull registry + patch schema"]
+        AUDIO_LLM["GPT-4o Audio  (llm.py)\nSends WAV, receives\nnatural language description"]
     end
 
-    subgraph Audio
-        REND["Renderer\n(Rack Pro headless)"]
-        SPEC["Spectrogram\n(librosa)"]
-        FEAT["Feature Extraction"]
-        AUD["Audio-Native Model\n(GPT-4o audio)"]
+    subgraph verify ["Verification"]
+        VAL["Validator  (validator.py)\nModule slugs, param ranges,\nport IDs, cable refs,\naudio output check"]
+        COMP["Compiler  (compiler.py)\nAssign module IDs, layout,\nJSON → tar+zstd → .vcv"]
     end
 
-    CLI --> ORCH
-    ORCH --> LLM
-    REG --> LLM
-    REG --> VAL
-    ORCH --> VAL
-    VAL --> COMP
-    COMP --> REND
-    REND --> SPEC
-    REND --> FEAT
-    REND --> AUD
-    SPEC & FEAT & AUD --> ORCH
+    subgraph audio ["Audio Pipeline"]
+        REND["Renderer  (renderer.py)\nRack Pro headless: -h flag\nTemp user dir, kill after N sec\n→ WAV via Recorder module"]
+        ANLZ["Analyzer  (analyzer.py)\nMel spectrogram → PNG\nFeature extraction → JSON\n(librosa + matplotlib)"]
+    end
 
-    style CLI fill:#0f3460,stroke:#e94560,color:#eee
-    style ORCH fill:#0f3460,stroke:#e94560,color:#eee
+    CMD --> LOOP
+    LOOP -- "prompt + history" --> LLM
+    REG -- "system prompt context" --> LLM
+    LLM -- "patch JSON" --> LOOP
+    LOOP -- "patch JSON" --> VAL
+    REG -- "validation rules" --> VAL
+    VAL -- "errors or OK" --> LOOP
+    LOOP -- "valid patch" --> COMP
+    COMP -- ".vcv file" --> REND
+    REND -- ".wav file" --> ANLZ
+    REND -- ".wav file" --> AUDIO_LLM
+    ANLZ -- "spectrogram PNG +\nfeatures JSON" --> LOOP
+    AUDIO_LLM -- "sonic description" --> LOOP
+
+    style CMD fill:#0f3460,stroke:#e94560,color:#eee
+    style LOOP fill:#0f3460,stroke:#e94560,color:#eee
     style LLM fill:#16213e,stroke:#0f3460,color:#eee
     style REG fill:#16213e,stroke:#0f3460,color:#eee
+    style AUDIO_LLM fill:#16213e,stroke:#0f3460,color:#eee
     style VAL fill:#1a1a2e,stroke:#0f3460,color:#eee
     style COMP fill:#1a1a2e,stroke:#0f3460,color:#eee
     style REND fill:#1a1a2e,stroke:#e94560,color:#eee
-    style SPEC fill:#1a1a2e,stroke:#e94560,color:#eee
-    style FEAT fill:#1a1a2e,stroke:#e94560,color:#eee
-    style AUD fill:#1a1a2e,stroke:#e94560,color:#eee
-```
-
-## Feedback channels
-
-The agent "hears" through three complementary channels:
-
-```mermaid
-flowchart LR
-    WAV["rendered .wav"]
-
-    WAV --> S["Spectrogram\n(visual)"]
-    WAV --> F["Feature Extraction\n(numeric)"]
-    WAV --> A["GPT-4o Audio\n(listens to WAV)"]
-
-    S --> |"mel PNG\nsent as image"| LLM["LLM"]
-    F --> |"centroid, pitch,\nrms, flatness..."| LLM
-    A --> |"natural language\nsonic description"| LLM
-
-    style WAV fill:#16213e,stroke:#e94560,color:#eee
-    style S fill:#1a1a2e,stroke:#0f3460,color:#eee
-    style F fill:#1a1a2e,stroke:#0f3460,color:#eee
-    style A fill:#1a1a2e,stroke:#0f3460,color:#eee
-    style LLM fill:#0f3460,stroke:#e94560,color:#eee
-```
-
-## Iteration strategy
-
-```mermaid
-stateDiagram-v2
-    [*] --> Generate: initial prompt
-    Generate --> Validate
-    Validate --> FixErrors: invalid
-    FixErrors --> Generate
-    Validate --> Render: valid
-    Render --> Analyze
-    Analyze --> Compare
-    Compare --> Tweak: delta > threshold\n(change 1-3 params)
-    Compare --> StructuralChange: plateau 3 rounds\n(swap waveform, add module)
-    Tweak --> Generate
-    StructuralChange --> Generate
-    Compare --> Done: converged or max iters
-    Done --> [*]
+    style ANLZ fill:#1a1a2e,stroke:#e94560,color:#eee
 ```
 
 ## Requirements
 
 - Python 3.11+
 - VCV Rack 2 Pro (headless mode)
-- OpenAI API key (GPT-4o for generation + audio feedback)
+- OpenAI API key (GPT-4o for patch generation + audio feedback)
 - librosa, matplotlib, pyzstd (installed via pip)
 
 ## Quick start
@@ -172,7 +136,7 @@ vcv-agent/
 
 ## Module scope (v1)
 
-38 Fundamental modules + 3 Core modules. No third-party plugins.
+38 Fundamental modules + 3 Core modules + Viz. No third-party plugins.
 The full registry with every parameter ID, port ID, and valid range
 lives in `registry/modules.json`.
 
