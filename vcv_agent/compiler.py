@@ -62,13 +62,13 @@ def ensure_patch_defaults(patch: dict[str, Any]) -> dict[str, Any]:
 def inject_recorder(patch: dict[str, Any], wav_path: str) -> dict[str, Any]:
     """Inject a VCV-Recorder module that writes to wav_path.
 
-    Finds the AudioInterface2 module, taps the cables going INTO its
-    inputs, and routes copies to the Recorder's L/R inputs. Also
-    wires the SEQ3 gate (if present) to the Recorder's gate input
-    so recording starts when the sequencer runs.
+    Finds the AudioInterface2 module, steals the cables going INTO its
+    inputs, reroutes them to the Recorder's L/R inputs, then REMOVES
+    AudioInterface2 from the patch.
 
-    If there's no AudioInterface2, finds the last VCA or module with
-    output going nowhere and taps that instead.
+    In headless mode, AudioInterface2 with no real driver causes the
+    engine to exit immediately. Removing it and using the Recorder as
+    the audio sink keeps the engine running.
     """
     modules = patch.get("modules", [])
     cables = patch.get("cables", [])
@@ -97,6 +97,17 @@ def inject_recorder(patch: dict[str, Any], wav_path: str) -> dict[str, Any]:
 
     if source_l is None and source_r is None:
         return patch  # nothing feeding audio output
+
+    # Remove AudioInterface2 and all cables connected to it
+    patch["modules"] = [m for m in modules if m["id"] != audio_id]
+    patch["cables"] = [
+        c
+        for c in cables
+        if c.get("inputModuleId") != audio_id
+        and c.get("outputModuleId") != audio_id
+    ]
+    modules = patch["modules"]
+    cables = patch["cables"]
 
     # Create Recorder module
     rec_id = random.randint(10**15, 10**16 - 1)

@@ -77,7 +77,10 @@ RULES:
 - Every patch MUST include Core/AudioInterface2 as the audio output
 - Signal must reach AudioInterface2 inputs (id 0 = left, id 1 = right)
 - Do NOT include VCV-Recorder. It is injected automatically for rendering.
-- Use only Fundamental and Core modules from the registry above
+- ONLY use these modules (renderer limitation):
+  Fundamental: VCO, VCA-1, ADSR, SEQ3, LFO, VCF, Noise, Delay
+  Core: AudioInterface2
+  Do NOT use VCO2, VCMixer, 8vert, Mixer, Random, or any other module.
 - Parameter values must be within the documented [min, max] range
 - Module IDs must be unique integers
 - Cable IDs must be unique integers
